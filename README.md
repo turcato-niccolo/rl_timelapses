@@ -6,4 +6,4 @@ python train_deep_rl --algo SAC --env BipedalWalker-v3 --seed 1 --start_timestep
 ```
 
 
-[![](https://markdown-videos-api.jorgenkh.no/youtube/dQw4w9WgXcQ)](https://youtu.be/CMij26OdtZ4)
+[![](https://youtu.be/CMij26OdtZ4)](https://youtu.be/CMij26OdtZ4)
