@@ -250,6 +250,7 @@ class SAC(object):
                  depth=2,
                  lr=3e-4,
                  device=None,
+                 rgb_input=False,
                  *args,
                  **kargs):
 
@@ -264,28 +265,51 @@ class SAC(object):
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.device = device
 
-        self.critic = TwinCritic(state_dim, action_dim, device=device, depth=depth, num_neurons=num_neurons)
-        self.critic_optim = Adam(self.critic.parameters(), lr=lr)
 
-        self.critic_target = TwinCritic(state_dim, action_dim, device=device, depth=depth, num_neurons=num_neurons)
-        hard_update(self.critic_target, self.critic)
-        self.updates = 0
+        self.rgb_input = rgb_input
 
-        if self.policy_type == "Gaussian":
+        if self.rgb_input:
+            print('Visual Gaussian policy selected')
             # Target Entropy = −dim(A) (e.g. , -6 for HalfCheetah-v2) as given in the paper
             if self.automatic_entropy_tuning is True:
                 self.target_entropy = -torch.prod(torch.Tensor([action_dim]).to(self.device)).item()
                 self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
                 self.alpha_optim = Adam([self.log_alpha], lr=lr)
 
-            self.policy = GaussianPolicy(state_dim, action_dim, num_neurons, max_action).to(self.device)
+            self.policy = VisualGaussianPolicy(state_dim, action_dim, num_neurons, max_action).to(self.device)
             self.policy_optim = Adam(self.policy.parameters(), lr=lr)
 
+            features_extractor, features_size = self.policy.features_extractor()
+
+            self.critic = VisualTwinCritic(state_dim, action_dim, features_extractor=features_extractor, features_size=features_size, device=device, depth=depth, num_neurons=num_neurons)
+            self.critic_optim = Adam(self.critic.parameters(), lr=lr)
+
+            self.critic_target = VisualTwinCritic(state_dim, action_dim, features_extractor=features_extractor, features_size=features_size, device=device, depth=depth, num_neurons=num_neurons)
+            hard_update(self.critic_target, self.critic)
+            self.updates = 0
         else:
-            self.alpha = 0
-            self.automatic_entropy_tuning = False
-            self.policy = DeterministicActor(state_dim, action_dim, device=device, depth=depth, num_neurons=num_neurons)
-            self.policy_optim = Adam(self.policy.parameters(), lr=lr)
+            self.critic = TwinCritic(state_dim, action_dim, device=device, depth=depth, num_neurons=num_neurons)
+            self.critic_optim = Adam(self.critic.parameters(), lr=lr)
+
+            self.critic_target = TwinCritic(state_dim, action_dim, device=device, depth=depth, num_neurons=num_neurons)
+            hard_update(self.critic_target, self.critic)
+            self.updates = 0
+
+            if self.policy_type == "Gaussian":
+                # Target Entropy = −dim(A) (e.g. , -6 for HalfCheetah-v2) as given in the paper
+                if self.automatic_entropy_tuning is True:
+                    self.target_entropy = -torch.prod(torch.Tensor([action_dim]).to(self.device)).item()
+                    self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+                    self.alpha_optim = Adam([self.log_alpha], lr=lr)
+
+                self.policy = GaussianPolicy(state_dim, action_dim, num_neurons, max_action).to(self.device)
+                self.policy_optim = Adam(self.policy.parameters(), lr=lr)
+
+            else:
+                self.alpha = 0
+                self.automatic_entropy_tuning = False
+                self.policy = DeterministicActor(state_dim, action_dim, device=device, depth=depth, num_neurons=num_neurons)
+                self.policy_optim = Adam(self.policy.parameters(), lr=lr)
 
         self.max_action = max_action
         self.total_it = 0
@@ -297,6 +321,8 @@ class SAC(object):
 
     def select_action(self, state, evaluate=False):
         state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
+        # print('state = torch.FloatTensor(state).to(self.device).unsqueeze(0)', state.shape)
+
         if evaluate:
             _, _, action = self.policy.sample(state)
         else:
@@ -425,6 +451,107 @@ class GaussianPolicy(DeterministicActor):
         mean = torch.tanh(mean) * self.action_scale + self.action_bias
         return action, log_prob, mean
 
+def conv2d_out_dim(h, w, kernel_size, stride=2, padding=0, dilation=1):
+    h_out = (h + 2*padding - dilation*(kernel_size - 1) - 1) // stride + 1
+    w_out = (w + 2*padding - dilation*(kernel_size - 1) - 1) // stride + 1
+    return h_out, w_out
+
+
+class VisualGaussianPolicy(DeterministicActor):
+    def __init__(self, state_dim, action_dim, device, max_action, depth=2, num_neurons=512, num_conv=2, kernel_size=20, num_channels=64):
+        
+        H,W,in_channels = state_dim
+        out_channels = num_channels
+        conv_layers = []
+        k = kernel_size
+        for i in range(num_conv):
+            conv_layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=k, stride=2))
+            conv_layers.append(nn.ReLU())
+            in_channels = out_channels
+            out_channels = max(4, out_channels // 2)  # don’t go below 4 channels
+            k = max(3, k // 2)  # keep kernel at least 3x3
+
+        conv_layers.append(nn.Flatten())
+        k = kernel_size
+        for i in range(num_conv):
+            H, W = conv2d_out_dim(H, W, k, stride=2)
+            C_out = out_channels
+            out_channels = max(4, out_channels // 2)
+            k = max(3, k // 2)
+
+        flattened_dim = H * W * C_out * out_channels
+
+        # print('flattened_dim', flattened_dim)
+        self.features_size = flattened_dim
+
+        super(VisualGaussianPolicy, self).__init__(state_dim=flattened_dim, action_dim=action_dim, device=device,
+                                             max_action=max_action, depth=depth, num_neurons=num_neurons)
+        
+        self.cnn = nn.Sequential(*conv_layers)
+
+
+        self.mean_linear = nn.Linear(num_neurons, action_dim, device=device)
+        self.log_std_linear = nn.Linear(num_neurons, action_dim, device=device)
+        self.apply(weights_init_)
+
+        # action rescaling
+        self.action_scale = max_action
+        self.action_bias = 0.
+
+    def features_extractor(self):
+        return self.cnn, self.features_size
+
+    def forward(self, state):
+        # Extract features
+        x = F.relu(self.layers[0](state))
+        for k in range(self.depth - 1):
+            x = F.relu(self.layers[k + 1](x))
+        mean = self.mean_linear(x)
+        log_std = self.log_std_linear(x)
+        log_std = torch.clamp(log_std, min=LOG_SIG_MIN, max=LOG_SIG_MAX)
+        return mean, log_std
+
+    def sample(self, state):
+        # Extract features
+        state = self.cnn(state.permute(0, 3, 1, 2) / 255)
+
+        mean, log_std = self.forward(state)
+        std = log_std.exp()
+        normal = Normal(mean, std)
+        x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1))
+        y_t = torch.tanh(x_t)
+        action = y_t * self.action_scale + self.action_bias
+        log_prob = normal.log_prob(x_t)
+        # Enforcing Action Bound
+        log_prob -= torch.log(self.action_scale * (1 - y_t.pow(2)) + epsilon)
+        log_prob = log_prob.sum(1, keepdim=True)
+        mean = torch.tanh(mean) * self.action_scale + self.action_bias
+        return action, log_prob, mean
+
+
+class VisualTwinCritic(nn.Module):
+    def __init__(self, state_dim, action_dim, device, features_extractor, features_size, depth=2, num_neurons=512):
+        super(VisualTwinCritic, self).__init__()
+
+        self.cnn = features_extractor
+        self.features_size = features_size
+
+        print(self.cnn)
+        print(self.features_size)
+
+        # Q1 architecture
+        self.q1 = Critic(state_dim=features_size, action_dim=action_dim, device=device, depth=depth, num_neurons=num_neurons)
+
+        # Q2 architecture
+        self.q2 = Critic(state_dim=features_size, action_dim=action_dim, device=device, depth=depth, num_neurons=num_neurons)
+
+    def forward(self, state, action):
+        state = self.cnn(state.permute(0, 3, 1, 2) / 255)
+        return self.q1(state, action), self.q2(state, action)
+
+    def Q1(self, state, action):
+        state = self.cnn(state.permute(0, 3, 1, 2) / 255)
+        return self.q1(state, action)
 
 class DeterministicPolicy(DeterministicActor):
     def __init__(self, state_dim, action_dim, device, max_action, depth=2, num_neurons=512):
@@ -460,11 +587,18 @@ class ReplayBuffer(object):
         self.ptr = 0
         self.size = 0
 
-        self.state = np.zeros((max_size, state_dim))
-        self.action = np.zeros((max_size, action_dim))
-        self.next_state = np.zeros((max_size, state_dim))
-        self.reward = np.zeros((max_size, 1))
-        self.not_done = np.zeros((max_size, 1))
+        if type(state_dim) == tuple:
+            self.state = np.zeros((max_size, *state_dim))
+            self.action = np.zeros((max_size, action_dim))
+            self.next_state = np.zeros((max_size, *state_dim))
+            self.reward = np.zeros((max_size, 1))
+            self.not_done = np.zeros((max_size, 1))
+        else:
+            self.state = np.zeros((max_size, state_dim))
+            self.action = np.zeros((max_size, action_dim))
+            self.next_state = np.zeros((max_size, state_dim))
+            self.reward = np.zeros((max_size, 1))
+            self.not_done = np.zeros((max_size, 1))
 
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -33,9 +33,11 @@ def eval_policy(policy, eval_env, seed, step, max_episode_steps,
         episode_states, episode_actions, episode_rewards = [], [], []
         state, done = eval_env.reset(seed=seed + ep)[0], False
         cnt = 0
-        while not done and cnt < max_episode_steps:
+        done = truncated = False
+        while not (done or truncated) and cnt < max_episode_steps:
+            # print(state.shape)
             action = policy.select_action(np.array(state), evaluate=True)
-            next_state, reward, done, _, _ = eval_env.step(action)
+            next_state, reward, done, truncated, _ = eval_env.step(action)
             episode_states.append(state)
             episode_actions.append(action)
             episode_rewards.append(reward)
@@ -67,7 +69,10 @@ def eval_policy(policy, eval_env, seed, step, max_episode_steps,
 # ----------------------------
 def make_eval_env(env_id, seed, video_dir=None, save_video=False):
     render_mode = "rgb_array" if save_video else None
-    env = gym.make(env_id, render_mode=render_mode)
+    if "LunarLander" in args.env:
+        env = gym.make(env_id, continuous=True, render_mode=render_mode)
+    else:
+        env = gym.make(env_id, render_mode=render_mode)
 
     if save_video and video_dir is not None:
         # Track eval counter
@@ -112,11 +117,13 @@ if __name__ == "__main__":
     parser.add_argument("--tau", default=0.005, type=float)
     parser.add_argument("--policy_freq", default=2, type=int)
     parser.add_argument("--eval_episodes", default=10, type=int)
+    parser.add_argument("--buffer_size", default=1000000, type=int)
     parser.add_argument("--save_model", action="store_true")
     parser.add_argument("--load_model", action="store_true")
     parser.add_argument("--real_update_freq", action="store_true")
     parser.add_argument("--name", default=None, type=str)
     parser.add_argument("--save_video", action="store_true")
+    parser.add_argument("--visual_policy_input", action="store_true")
 
     args = parser.parse_args()
 
@@ -137,7 +144,10 @@ if __name__ == "__main__":
         os.makedirs(video_dir, exist_ok=True)
 
     # Environments
-    env = gym.make(args.env)
+    if "LunarLander" in args.env:
+        env = gym.make(args.env, continuous=True)
+    else:
+        env = gym.make(args.env)
     eval_env = make_eval_env(args.env, args.seed, video_dir, args.save_video)
     eval_max_episode_steps = args.max_episode_steps
     eval_episodes = args.eval_episodes
@@ -145,25 +155,47 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
-    max_action = float(env.action_space.high[0])
-
-    print("max_action", max_action)
-    print("action_dim", action_dim)
-    print("state_dim", state_dim)
 
     # Dynamically load algorithm class from deep_rl.py
     policy_cls = get_class_from_module("deep_rl", args.algo)
-    policy = policy_cls(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        max_action=max_action,
-        discount=args.discount,
-        tau=args.tau,
-        policy_freq=args.policy_freq,
-        device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-    )
+    if args.visual_policy_input:
+        state_dim = env.observation_space.shape
+        action_dim = env.action_space.shape[0]
+        max_action = float(env.action_space.high[0])
+
+        print("max_action", max_action)
+        print("action_dim", action_dim)
+        print("state_dim", state_dim)
+
+
+        policy = policy_cls(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            max_action=max_action,
+            discount=args.discount,
+            tau=args.tau,
+            policy_freq=args.policy_freq,
+            device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+            rgb_input=True
+        )
+    else:
+        state_dim = env.observation_space.shape[0]
+        action_dim = env.action_space.shape[0]
+        max_action = float(env.action_space.high[0])
+
+        print("max_action", max_action)
+        print("action_dim", action_dim)
+        print("state_dim", state_dim)
+
+        policy = policy_cls(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            max_action=max_action,
+            discount=args.discount,
+            tau=args.tau,
+            policy_freq=args.policy_freq,
+            device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        )
 
     # Replay buffer (assumes deep_rl exports ReplayBuffer)
     ReplayBuffer = get_class_from_module("deep_rl", "ReplayBuffer")
@@ -183,7 +215,7 @@ if __name__ == "__main__":
             axs[2].plot(rewards[k])
         plt.show()
     else:
-        replay_buffer = ReplayBuffer(state_dim, action_dim)
+        replay_buffer = ReplayBuffer(int(state_dim), int(action_dim), max_size=int(args.buffer_size))
 
         # Evaluate untrained policy
         evaluations = [eval_policy(policy, eval_env, args.seed, 0,
