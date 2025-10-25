@@ -13,3 +13,10 @@ python train_deep_rl.py --algo SAC --env LunarLander-v3 --seed 1 --start_timeste
 
 ```
 [![](https://markdown-videos-api.jorgenkh.no/youtube/qrFnW483b5I)](https://youtu.be/qrFnW483b5I)
+
+## Hopper
+```
+python train_deep_rl.py --algo SAC --env Hopper-v5 --seed 1 --start_timesteps 5000 --max_episode_steps 1000 --eval_freq 5000 --max_timesteps 2000000 --policy_freq 2 --eval_episodes 1 --batch_size 512 --save_model --save_video
+
+```
+[![](https://markdown-videos-api.jorgenkh.no/youtube/hJH8ar5ru6E)](https://youtu.be/hJH8ar5ru6E)
