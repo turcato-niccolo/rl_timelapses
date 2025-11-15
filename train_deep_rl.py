@@ -236,6 +236,12 @@ if __name__ == "__main__":
 
             # Step
             next_state, reward, done, truncated, _ = env.step(action)
+            if "Swimmer" in args.env: # Terminate if angles are too big
+                q1 = next_state[1]
+                q2 = next_state[2]
+                if abs(q1) > np.pi/4 or abs(q2) > np.pi/4:
+                    done = True
+
             done_bool = float(done or truncated) if episode_timesteps < args.max_episode_steps else 0
 
             # Store
