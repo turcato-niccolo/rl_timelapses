@@ -27,3 +27,10 @@ python train_deep_rl.py --algo SAC --env Ant-v5 --seed 2 --start_timesteps 5000 
 
 ```
 [![](https://markdown-videos-api.jorgenkh.no/youtube/Ggo4QGTb32w)](https://youtu.be/Ggo4QGTb32w)
+
+
+## HalfCheeta
+```
+python train_deep_rl.py --algo SAC --env HalfCheetah-v5 --seed 0 --start_timesteps 5000 --max_episode_steps 1000 --eval_freq 10000 --max_timesteps 2000000 --policy_freq 2 --eval_episodes 1 --batch_size 512 --save_model --save_video
+```
+[![](https://markdown-videos-api.jorgenkh.no/youtube/TOfozcBVn00)](https://youtu.be/TOfozcBVn00)
