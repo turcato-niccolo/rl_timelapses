@@ -20,3 +20,7 @@ python train_deep_rl.py --algo SAC --env Hopper-v5 --seed 1 --start_timesteps 50
 
 ```
 [![](https://markdown-videos-api.jorgenkh.no/youtube/hJH8ar5ru6E)](https://youtu.be/hJH8ar5ru6E)
+
+
+Quadruped Robot simulation
+https://github.com/iit-DLSLab/gym-quadruped

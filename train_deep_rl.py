@@ -12,6 +12,18 @@ from torch.utils.tensorboard import SummaryWriter
 
 import importlib
 
+from gymnasium.wrappers import FlattenObservation
+from gym_quadruped.quadruped_env import QuadrupedEnv
+
+class QuadrupedEnv_(QuadrupedEnv):
+    def reset(self, **kwargs):
+        return super().reset(**kwargs), {}
+
+    def _compute_reward(self):
+        # Example reward function (to be defined based on the task)
+        # Reward could be based on distance traveled, energy efficiency, etc.
+        return +1
+
 
 # ----------------------------
 # Dynamic import helper
@@ -32,6 +44,11 @@ def eval_policy(policy, eval_env, seed, step, max_episode_steps,
     for ep in range(eval_episodes):
         episode_states, episode_actions, episode_rewards = [], [], []
         state, done = eval_env.reset(seed=seed + ep)[0], False
+
+        state = np.array(state)
+        print("state", state.shape, state.dtype)
+
+
         cnt = 0
         done = truncated = False
         while not (done or truncated) and cnt < max_episode_steps:
@@ -49,6 +66,8 @@ def eval_policy(policy, eval_env, seed, step, max_episode_steps,
         actions.append(episode_actions)
         rewards.append(episode_rewards)
 
+    eval_env.close()
+    
     avg_reward /= eval_episodes
 
     print("---------------------------------------")
@@ -63,37 +82,88 @@ def eval_policy(policy, eval_env, seed, step, max_episode_steps,
 
     return avg_reward
 
+import imageio
+import numpy as np
 
-# ----------------------------
-# Environment builder
-# ----------------------------
+import gymnasium as gym
+import imageio
+import numpy as np
+import os
+
+
+class VideoRecorder(gym.Wrapper):
+    """
+    Gym-style video recorder that saves a video every episode.
+    """
+
+    def __init__(self, env, video_dir, prefix="eval", fps=30):
+        super().__init__(env)
+        self.video_dir = video_dir
+        self.prefix = prefix
+        self.fps = fps
+
+        os.makedirs(video_dir, exist_ok=True)
+
+        self.episode_idx = 0
+        self.frames = []
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+
+        # If previous episode had frames, save it
+        if len(self.frames) > 0:
+            self._save_episode_video()
+            self.episode_idx += 1
+
+        # Start new episode
+        self.frames = []
+        frame = self.env.render()
+        if frame is not None:
+            self.frames.append(np.asarray(frame))
+
+        return obs, info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+
+        frame = self.env.render()
+        if frame is not None:
+            self.frames.append(np.asarray(frame))
+
+        return obs, reward, terminated, truncated, info
+
+    def _save_episode_video(self):
+        if len(self.frames) == 0:
+            return
+        path = os.path.join(self.video_dir, f"{self.prefix}_episode_{self.episode_idx}.mp4")
+        imageio.mimsave(path, self.frames, fps=self.fps)
+        print(f"Saved video: {path}")
+
+    def close(self):
+        self._save_episode_video()
+        return self.env.close()
+
+
 def make_eval_env(env_id, seed, video_dir=None, save_video=False):
-    render_mode = "rgb_array" if save_video else None
-    if "LunarLander" in args.env:
-        env = gym.make(env_id, continuous=True, render_mode=render_mode)
-    else:
-        env = gym.make(env_id, render_mode=render_mode)
-
-    if save_video and video_dir is not None:
-        # Track eval counter
-        eval_counter = {"count": 0}
-
-        def episode_trigger(ep_id):
-            # Increment eval_counter at each new eval call
-            eval_counter["count"] += 1
-            return True  # record all episodes
-
-        # Wrapper that modifies file names dynamically
-        class CustomRecordVideo(RecordVideo):
-            def _get_file_path(self, episode_id):
-                filename = f"eval-seed{seed}-eval{eval_counter['count']}-episode-{episode_id}.mp4"
-                return os.path.join(self.video_folder, filename)
-
-        env = CustomRecordVideo(
-            env,
-            video_folder=video_dir,
-            episode_trigger=lambda ep_id: True,
+    # Create environment
+    if "LunarLander" in env_id:
+        env = gym.make(env_id, continuous=True)
+    elif env_id == "mini_cheetah":
+        scene_name = "flat"
+        state_obs_names = tuple(QuadrupedEnv_.ALL_OBS)
+        env = QuadrupedEnv_(
+            robot='mini_cheetah',
+            scene=scene_name,
+            base_vel_command_type="human",
+            state_obs_names=state_obs_names,
         )
+        env = FlattenObservation(env)
+    else:
+        env = gym.make(env_id)
+
+    # Wrap for video recording
+    if save_video and video_dir is not None:
+        env = VideoRecorder(env, video_dir, prefix=f"seed{seed}")
 
     return env
 
@@ -125,6 +195,8 @@ if __name__ == "__main__":
     parser.add_argument("--save_video", action="store_true")
     parser.add_argument("--visual_policy_input", action="store_true")
 
+    parser.add_argument("--num_neurons", default=256, type=int)
+    parser.add_argument("--depth", default=2, type=int)
     args = parser.parse_args()
 
     # Base folder per algorithm
@@ -146,6 +218,17 @@ if __name__ == "__main__":
     # Environments
     if "LunarLander" in args.env:
         env = gym.make(args.env, continuous=True)
+    elif args.env == "mini_cheetah":
+        scene_name = "flat"  # perlin | random_boxes
+        state_observables_names = tuple(QuadrupedEnv_.ALL_OBS)  # return all available state observables
+        env = QuadrupedEnv_(robot='mini_cheetah',
+                           scene=scene_name,
+                           base_vel_command_type="human",  # "forward", "random", "forward+rotate", "human"
+                           state_obs_names=state_observables_names,  # Desired quantities in the 'state'
+                           )
+        # Flatten dict → single vector
+        env = FlattenObservation(env)
+
     else:
         env = gym.make(args.env)
     eval_env = make_eval_env(args.env, args.seed, video_dir, args.save_video)
@@ -162,6 +245,9 @@ if __name__ == "__main__":
         state_dim = env.observation_space.shape
         action_dim = env.action_space.shape[0]
         max_action = float(env.action_space.high[0])
+        max_action = min(max_action, 10)
+
+
 
         print("max_action", max_action)
         print("action_dim", action_dim)
@@ -174,6 +260,8 @@ if __name__ == "__main__":
             max_action=max_action,
             discount=args.discount,
             tau=args.tau,
+            num_neurons=args.num_neurons,
+            depth=args.depth,
             policy_freq=args.policy_freq,
             device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
             rgb_input=True
@@ -182,6 +270,7 @@ if __name__ == "__main__":
         state_dim = env.observation_space.shape[0]
         action_dim = env.action_space.shape[0]
         max_action = float(env.action_space.high[0])
+        max_action = min(max_action, 10)
 
         print("max_action", max_action)
         print("action_dim", action_dim)
@@ -232,7 +321,7 @@ if __name__ == "__main__":
             if t < args.start_timesteps:
                 action = env.action_space.sample()
             else:
-                action = policy.select_action(np.array(state), evaluate=False)
+                action = np.clip(policy.select_action(np.array(state), evaluate=False), -max_action, max_action)
 
             # Step
             next_state, reward, done, truncated, _ = env.step(action)
